@@ -89,6 +89,7 @@ pub struct State
     color: wgpu::Color,
     index_buffer: wgpu::Buffer,
     num_indices: u32,
+    index_or_vertices: bool
 }
 
 impl State {
@@ -245,7 +246,11 @@ impl State {
 
         let num_indices = INDICES.len() as u32;  
         
-        
+        let mut index_or_vertices = false;
+
+
+
+        // SELF
         Ok(Self
             {
                 surface,
@@ -260,8 +265,12 @@ impl State {
                 color,
                 index_buffer, 
                 num_indices,
-            } )
+                index_or_vertices,
+            })
+        // SELF
+
     }
+        
 
     pub fn resize(&mut self, _width: u32, _height: u32) {
         if _width > 0 && _height > 0 {
@@ -317,8 +326,17 @@ impl State {
             // SET INDEX BUFFER 
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
 
-            render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+            // render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+            
+            
+            // CHANGE INDEX OR VERTICES DRAW
+            if self.index_or_vertices {
+                render_pass.draw(0..self.num_vertices, 0..1);
+            }
+            else {
+                render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
 
+            }
 
             // RENDER PASS DRAW
             // render_pass.draw(0..self.num_vertices, 0..1);
@@ -370,20 +388,20 @@ impl ApplicationHandler for App {
         _window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
-        let state = match &mut self.state {
+        let wgpu_state = match &mut self.state {
             Some(canvas) => canvas,
             None => return,
         };
 
     match event {
                 WindowEvent::CloseRequested => event_loop.exit(),
-                WindowEvent::Resized(size) => state.resize(size.width, size.height),
+                WindowEvent::Resized(size) => wgpu_state.resize(size.width, size.height),
                 WindowEvent::RedrawRequested => {
-                    match state.render() {
+                    match wgpu_state.render() {
                         Ok(_) => {}
                         Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                            let size = state.window.inner_size();
-                            state.resize(size.width, size.height);
+                            let size = wgpu_state.window.inner_size();
+                            wgpu_state.resize(size.width, size.height);
                         }
                         Err(e) => {
                             log::error!("unable to render {}", e);
@@ -430,8 +448,8 @@ impl ApplicationHandler for App {
                     ..
                 } => match (code, state.is_pressed()) {
                     (KeyCode::Escape, true) => event_loop.exit(),
-                    (KeyCode::Space, true) => {
-                        
+                    (KeyCode::KeyV, true) => {
+                        wgpu_state.index_or_vertices = !wgpu_state.index_or_vertices;
                     }
                     _ => {}
                 },

@@ -2,7 +2,10 @@
 use env_logger::fmt::style::RgbColor;
 #[cfg(target_arch="wasm32")]
 use wgpu::naga::back::spv::SourceLanguage;
+use wgpu::naga::back::INDENT;
 use wgpu::wgc::device::{self, queue};
+use wgpu::wgt::bytemuck_wrapper;
+use wgpu::Buffer;
 use wgpu::{wgc::instance, Surface};
 use wgpu::util::DeviceExt;
 use winit::dpi::Pixel;
@@ -11,6 +14,7 @@ use std::io::Cursor;
 use std::{any, io::SeekFrom, ops::Not, sync::Arc};
 extern crate rand;
 use rand::{random_range, Rng};
+
 
 use winit::{
     application::ApplicationHandler, event::{Event, KeyEvent, WindowEvent}, event_loop::{self, ActiveEventLoop, ControlFlow, EventLoop}, keyboard::{KeyCode, PhysicalKey}, window::{self, Window, WindowAttributes, WindowId}
@@ -24,6 +28,52 @@ use wasm_bindgen::prelude::*;
 // Все комментарии кода и подсказки были взяты с сайта: https://sotrh.github.io/learn-wgpu/beginner/tutorial2-surface/#render
 
 
+
+const VERTICES: &[Vertex] = &[
+    Vertex { position: [-0.0868241, 0.49240386, 0.0], color: [0.1, 0.0, 0.3] }, // A
+    Vertex { position: [-0.49513406, 0.06958647, 0.0], color: [0.5, 0.0, 0.2] }, // B
+    Vertex { position: [-0.21918549, -0.44939706, 0.0], color: [0.5, 0.0, 0.6] }, // C
+    Vertex { position: [0.35966998, -0.3473291, 0.0], color: [0.3, 0.0, 0.9] }, // D
+    Vertex { position: [0.44147372, 0.2347359, 0.0], color: [0.4, 0.0, 0.1] }, // E
+];
+
+
+const INDICES: &[u16] = &[
+    0, 1, 4,
+    1, 2, 4,
+    2, 3, 4,
+];
+ 
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct Vertex {
+    position: [f32; 3],
+    color: [f32; 3],
+}
+
+
+impl Vertex {
+    fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &[
+            wgpu::VertexAttribute {
+                offset: 0,
+                shader_location: 0,
+                format: wgpu::VertexFormat::Float32x3,
+            },
+            wgpu::VertexAttribute {
+                offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                shader_location: 1,
+                format: wgpu::VertexFormat::Float32x3,
+            }
+        ]
+    }
+    }    
+}
+
 // State struct which init in app fn::new
 pub struct State 
 {
@@ -33,9 +83,12 @@ pub struct State
     config: wgpu::SurfaceConfiguration,
     is_surface_configured: bool,
     render_pipeline: wgpu::RenderPipeline,
+    vertex_buffer: wgpu::Buffer,
+    num_vertices: u32,
     window: Arc<Window>,
-    color: wgpu::Color
-
+    color: wgpu::Color,
+    index_buffer: wgpu::Buffer,
+    num_indices: u32,
 }
 
 impl State {
@@ -120,13 +173,6 @@ impl State {
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()) 
         });
 
-        let render_pipeline_layout_t = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { 
-            label: Some("render pipeline layout"),
-            bind_group_layouts: &[], 
-            push_constant_ranges: &[]    
-        });
-
-
         let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { 
             label: Some("render pipeline layout"),
             bind_group_layouts: &[], 
@@ -140,7 +186,10 @@ impl State {
             vertex: wgpu::VertexState { 
                 module: &shader, 
                 entry_point: Some("vs_main"), 
-                buffers: &[], 
+                buffers: &[
+                    // SHADER BUFFER
+                    Vertex::desc(), 
+                ], 
                 compilation_options: wgpu::PipelineCompilationOptions::default(), 
             }, 
             fragment: Some(wgpu::FragmentState { 
@@ -175,47 +224,27 @@ impl State {
             cache: None,
         });
 
-        let render_pipeline_t = device.create_render_pipeline(
-          &wgpu::RenderPipelineDescriptor {
-            label: Some("render pipeline"), 
-            layout: Some(&render_pipeline_layout), 
-            vertex: wgpu::VertexState { 
-                module: &shader, 
-                entry_point: Some("vs_main_t"), 
-                buffers: &[], 
-                compilation_options: wgpu::PipelineCompilationOptions::default(), 
-            }, 
-            fragment: Some(wgpu::FragmentState { 
-                module: &shader, 
-                entry_point: Some("fs_main_t"), 
-                targets: &[Some(wgpu::ColorTargetState { 
-                    format: config.format, 
-                    blend: Some(wgpu::BlendState::REPLACE), 
-                    write_mask: wgpu::ColorWrites::ALL, 
-                })], 
-                compilation_options: wgpu::PipelineCompilationOptions::default(), 
-            }), 
 
-            // Поле primitive описывает, как интерпретировать наши вершины при преобразовании их в треугольники.
-            primitive: wgpu::PrimitiveState { 
-                topology: wgpu::PrimitiveTopology::TriangleList, 
-                strip_index_format: None, 
-                front_face: wgpu::FrontFace::Ccw, 
-                cull_mode: Some(wgpu::Face::Back),
-                // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE 
-                polygon_mode: wgpu::PolygonMode::Fill, 
-                unclipped_depth: false, 
-                conservative: false, 
-            }, 
+        let vertex_buffer = device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("vertex buffer"),
+                contents: bytemuck::cast_slice(VERTICES),
+                usage: wgpu::BufferUsages::VERTEX,
+            }
+        );
 
-            depth_stencil: None, 
-            multisample: wgpu::MultisampleState { 
-                count: 1, 
-                mask: !0,  // !=0
-                alpha_to_coverage_enabled: false }, 
-            multiview: None, 
-            cache: None,
-        });
+        let num_vertices = VERTICES.len() as u32;
+
+        let index_buffer = device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("index buffer"),
+                contents: bytemuck::cast_slice(INDICES),
+                usage: wgpu::BufferUsages::INDEX,
+            }
+        );  // координаты передаются индексом что занимает меньше памяти
+
+        let num_indices = INDICES.len() as u32;  
+        
         
         Ok(Self
             {
@@ -225,8 +254,12 @@ impl State {
                 config,
                 is_surface_configured: false,
                 render_pipeline,
+                vertex_buffer,
+                num_vertices,
                 window,
-                color
+                color,
+                index_buffer, 
+                num_indices,
             } )
     }
 
@@ -276,7 +309,19 @@ impl State {
                 });
 
             render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.draw(0..3, 0..1);
+
+            // SET VERTEX BUFFER TO RENDER PASS
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            
+
+            // SET INDEX BUFFER 
+            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+
+            render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+
+
+            // RENDER PASS DRAW
+            // render_pass.draw(0..self.num_vertices, 0..1);
         }
         
         self.queue.submit(std::iter::once(encoder.finish()));
